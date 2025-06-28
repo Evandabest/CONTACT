@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import './App.css'
+import LiveFeed from './components/LiveFeed'
+import ServerConfig from './components/ServerConfig'
 
 function App() {
   // Mock data for public cameras.
@@ -12,15 +14,15 @@ function App() {
 
   return (
     <div className="app">
+      <ServerConfig />
       <header className="header">
         <h1>Operator Dashboard</h1>
+        <p className="subtitle">Emergency Response & Monitoring System</p>
       </header>
       <main className="main-content">
-        <section className="twilio-feed">
-          <h2 className="feed-title">Live Call Feed</h2>
-          <div className="video-container">
-            <span>Twilio video and audio feed will appear here.</span>
-          </div>
+        <section className="emergency-feed">
+          <h2 className="feed-title">Emergency Live Feed</h2>
+          <LiveFeed />
         </section>
         <section className="public-feeds">
           <h2 className="feed-title">Nearby Public Cameras</h2>

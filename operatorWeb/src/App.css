@@ -2,6 +2,8 @@
 .app {
   text-align: center;
   padding: 20px;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
 }
 
 .header {
@@ -13,15 +15,26 @@
     color: #e0e0e0;
     text-transform: uppercase;
     letter-spacing: 2px;
+    margin-bottom: 0.5rem;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.subtitle {
+    font-size: 1.2rem;
+    color: #b0b0b0;
+    margin: 0;
+    font-weight: 300;
 }
 
 .main-content {
   display: flex;
   gap: 20px;
   justify-content: center;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-.twilio-feed {
+.emergency-feed {
   width: 70%;
   max-width: 900px;
 }
@@ -30,6 +43,10 @@
     font-size: 1.5rem;
     margin-bottom: 1rem;
     color: #cccccc;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 2px solid #2196f3;
+    padding-bottom: 10px;
 }
 
 .video-container {
@@ -40,6 +57,8 @@
   justify-content: center;
   align-items: center;
   color: #555;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
 }
 
 .public-feeds {
@@ -55,13 +74,86 @@
     grid-template-columns: 1fr;
     gap: 15px;
     overflow-y: auto;
-    max-height: 500px; /* Adjust as needed */
+    max-height: 600px;
     padding-right: 10px;
 }
 
+.camera-grid .video-container {
+    aspect-ratio: 4 / 3;
+    background: linear-gradient(45deg, #2c3e50, #34495e);
+    border: 1px solid #555;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.camera-grid .video-container:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+}
+
 .no-cameras {
-    background-color: #222;
+    background-color: rgba(34, 34, 34, 0.8);
     padding: 20px;
     border-radius: 8px;
     color: #888;
+    border: 1px solid #444;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+  .main-content {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .emergency-feed,
+  .public-feeds {
+    width: 100%;
+    max-width: 900px;
+  }
+  
+  .camera-grid {
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    max-height: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .app {
+    padding: 10px;
+  }
+  
+  .header h1 {
+    font-size: 2rem;
+  }
+  
+  .subtitle {
+    font-size: 1rem;
+  }
+  
+  .feed-title {
+    font-size: 1.2rem;
+  }
+  
+  .camera-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Custom scrollbar for camera grid */
+.camera-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.camera-grid::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.camera-grid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+.camera-grid::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
 } 

@@ -20,7 +20,10 @@ import { Audio } from 'expo-av';
 import { io, Socket } from 'socket.io-client';
 import { useWeatherData } from './hooks/useWeatherData';
 import { useAudioRecording } from './hooks/useAudioRecording';
+import { useCameraRecording } from './hooks/useCameraRecording';
 import { useTapCounter } from './hooks/useTapCounter';
+import { usePermissions } from './hooks/usePermissions';
+import { PermissionsScreen } from './components/PermissionsScreen';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const { width, height } = Dimensions.get('window');
@@ -56,12 +59,19 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [city, setCity] = useState('');
   const [showLocationPrompt, setShowLocationPrompt] = useState(false);
-  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | null>(null);
   const [showToast, setShowToast] = useState(false);
 
   // Custom hooks
   const { weatherData, loading, error, fetchWeatherByCity } = useWeatherData(location);
   const { isRecording, startRecording, stopRecording } = useAudioRecording();
+  const { 
+    isRecording: isCameraRecording, 
+    startRecording: startCameraRecording, 
+    stopRecording: stopCameraRecording,
+    capturePhoto,
+    startVideoRecording,
+    setCamera 
+  } = useCameraRecording();
   const { 
     sunriseTaps, 
     sunsetTaps, 
@@ -70,22 +80,34 @@ export default function App() {
     resetSunriseTaps,
     resetSunsetTaps 
   } = useTapCounter();
+  
+  // Permission management
+  const {
+    permissionStatus,
+    permissionChoices,
+    isFirstLaunch,
+    isLoading: permissionsLoading,
+    savePermissionChoices,
+    requestLocationPermission,
+    requestMicrophonePermission,
+    requestCameraPermission,
+    checkCurrentPermissions,
+  } = usePermissions();
 
-  // Initialize location
+  // Initialize location based on permission status
   useEffect(() => {
-    (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setLocationPermission('denied');
-        setErrorMsg('Permission to access location was denied');
-        return;
-      }
-
-      setLocationPermission('granted');
-      let location = await Location.getCurrentPositionAsync({});
-      setLocation(location);
-    })();
-  }, []);
+    if (permissionStatus.location === 'granted' && !location) {
+      (async () => {
+        try {
+          let location = await Location.getCurrentPositionAsync({});
+          setLocation(location);
+        } catch (error) {
+          console.error('Error getting location:', error);
+          setErrorMsg('Failed to get current location');
+        }
+      })();
+    }
+  }, [permissionStatus.location, location]);
 
   // Initialize Socket.IO connection
   useEffect(() => {
@@ -119,6 +141,49 @@ export default function App() {
       newSocket.close();
     };
   }, []);
+
+  // Handle permission choices completion
+  const handlePermissionsComplete = async (choices: {
+    location: boolean;
+    microphone: boolean;
+    camera: boolean;
+  }) => {
+    await savePermissionChoices(choices);
+  };
+
+  // Show loading screen while checking permissions
+  if (permissionsLoading) {
+    console.log('🔍 Loading permissions...');
+    return (
+      <LinearGradient
+        colors={['#60A5FA', '#2563EB']}
+        style={styles.container}
+      >
+        <StatusBar barStyle="light-content" />
+        <SafeAreaView style={styles.container}>
+          <View style={styles.loadingContainer}>
+            <Ionicons name="cloud" size={64} color="#FFFFFF" />
+            <Text style={styles.loadingText}>Loading...</Text>
+          </View>
+        </SafeAreaView>
+      </LinearGradient>
+    );
+  }
+
+  // Show permissions screen on first launch
+  if (isFirstLaunch) {
+    console.log('🎯 First launch detected, showing permissions screen');
+    return (
+      <PermissionsScreen onComplete={handlePermissionsComplete} />
+    );
+  }
+
+  // Fallback: if permission system is not working, show main app
+  if (isFirstLaunch === null && !permissionsLoading) {
+    console.log('⚠️ Permission system not initialized, showing main app');
+  }
+
+  console.log('📱 App ready, permission status:', permissionStatus);
 
   const getWeatherIcon = (iconCode: string) => {
     const iconMap: { [key: string]: keyof typeof Ionicons.glyphMap } = {
@@ -175,19 +240,16 @@ export default function App() {
 
   const requestLocation = async () => {
     try {
-      let { status } = await Location.requestForegroundPermissionsAsync();
+      const status = await requestLocationPermission();
       if (status !== 'granted') {
-        setLocationPermission('denied');
         setErrorMsg('Location access denied. Please search for a city manually.');
         return;
       }
 
-      setLocationPermission('granted');
       setShowLocationPrompt(false);
       let location = await Location.getCurrentPositionAsync({});
       setLocation(location);
     } catch (error) {
-      setLocationPermission('denied');
       setErrorMsg('Failed to get location. Please search for a city manually.');
     }
   };
@@ -204,14 +266,33 @@ export default function App() {
     incrementSunriseTaps();
     
     if (sunriseTaps === 2) { // 3rd tap
-      if (!isRecording) {
+      if (!isRecording && !isCameraRecording) {
         setShowToast(true);
         Vibration.vibrate(500);
         resetSunriseTaps();
         
-        // Start recording automatically after a short delay
-        setTimeout(() => {
-          startRecording();
+        // Start both audio and camera recording automatically after a short delay
+        setTimeout(async () => {
+          try {
+            // Start audio recording
+            await startRecording();
+            
+            // Start camera recording
+            await startCameraRecording();
+            
+            // Capture a photo immediately
+            setTimeout(() => {
+              capturePhoto();
+            }, 1000);
+            
+            // Start video recording after photo
+            setTimeout(() => {
+              startVideoRecording();
+            }, 2000);
+            
+          } catch (error) {
+            console.error('Error starting emergency recording:', error);
+          }
         }, 1000);
         
         // Hide toast after 3 seconds
@@ -229,13 +310,28 @@ export default function App() {
     incrementSunsetTaps();
     
     if (sunsetTaps === 2) { // 3rd tap
-      if (isRecording) {
+      if (isRecording || isCameraRecording) {
         setShowToast(true);
         Vibration.vibrate(500);
         resetSunsetTaps();
         
-        // Stop recording
-        stopRecording();
+        // Stop both recordings
+        setTimeout(async () => {
+          try {
+            // Stop audio recording
+            if (isRecording) {
+              await stopRecording();
+            }
+            
+            // Stop camera recording
+            if (isCameraRecording) {
+              await stopCameraRecording();
+            }
+            
+          } catch (error) {
+            console.error('Error stopping emergency recording:', error);
+          }
+        }, 1000);
         
         // Hide toast after 3 seconds
         setTimeout(() => {
@@ -310,14 +406,14 @@ export default function App() {
                 }}>
                   <Ionicons name="alert-circle" size={24} color="#fff" style={{ marginRight: 10 }} />
                   <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>
-                    Emergency service triggered
+                    Emergency service activated - Camera & Audio recording
                   </Text>
                 </View>
               </View>
             )}
 
             {/* Search Form */}
-            {(!showLocationPrompt || weatherData || locationPermission === 'denied') && (
+            {(!showLocationPrompt || weatherData || permissionStatus.location === 'denied') && (
               <View style={styles.searchContainer}>
                 <View style={styles.searchInputContainer}>
                   <Ionicons name="search" size={20} color="#9CA3AF" style={styles.searchIcon} />
@@ -343,7 +439,7 @@ export default function App() {
             )}
 
             {/* Location Permission Prompt */}
-            {showLocationPrompt && !weatherData && !loading && locationPermission !== 'denied' && (
+            {showLocationPrompt && !weatherData && !loading && permissionStatus.location !== 'denied' && (
               <View style={styles.permissionOverlay}>
                 <View style={styles.permissionContainer}>
                   <Ionicons name="navigate" size={48} color="#BFDBFE" style={styles.permissionIcon} />
@@ -477,7 +573,7 @@ export default function App() {
                 </View>
 
                 {/* Refresh Location Button */}
-                {locationPermission === 'granted' && (
+                {permissionStatus.location === 'granted' && (
                   <TouchableOpacity 
                     style={styles.refreshButton}
                     onPress={requestLocation}
@@ -774,21 +870,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
-  refreshButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 25,
-    gap: 8,
-  },
-  refreshButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '500',
-  },
   instructionsContainer: {
     alignItems: 'center',
     marginTop: 32,
@@ -824,5 +905,29 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 18,
+    color: '#FFFFFF',
+    marginTop: 16,
+  },
+  refreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    padding: 12,
+    borderRadius: 25,
+    marginTop: 24,
+  },
+  refreshButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
   },
 }); 

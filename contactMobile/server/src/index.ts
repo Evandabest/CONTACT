@@ -205,6 +205,144 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle photo data from camera
+  socket.on('photoData', async (data) => {
+    try {
+      console.log('📸 Received photo data from client:', socket.id);
+      
+      const { photoData, format = 'jpeg', timestamp } = data;
+      
+      if (!photoData) {
+        console.error('❌ No photo data provided');
+        return;
+      }
+
+      // Convert base64 to buffer
+      const buffer = Buffer.from(photoData, 'base64');
+
+      // Validate photo size
+      if (buffer.length < 1000) {
+        console.log('🔇 Photo data too small, skipping');
+        return;
+      }
+
+      if (buffer.length > 10000000) { // 10MB limit
+        console.log('🔇 Photo data too large, skipping');
+        return;
+      }
+
+      console.log('📸 Processing photo:', {
+        size: buffer.length,
+        format,
+        timestamp,
+        originalSize: photoData.length
+      });
+
+      // Create media directory
+      const mediaDir = path.join(__dirname, '../media');
+      if (!fs.existsSync(mediaDir)) {
+        fs.mkdirSync(mediaDir, { recursive: true });
+      }
+
+      // Create photos subdirectory
+      const photosDir = path.join(mediaDir, 'photos');
+      if (!fs.existsSync(photosDir)) {
+        fs.mkdirSync(photosDir, { recursive: true });
+      }
+
+      // Save photo with timestamp
+      const photoFileName = `photo_${Date.now()}.${format}`;
+      const photoPath = path.join(photosDir, photoFileName);
+      fs.writeFileSync(photoPath, buffer);
+
+      console.log('📁 Saved photo:', photoPath);
+
+      // Send confirmation back to client
+      socket.emit('photoReceived', {
+        success: true,
+        filename: photoFileName,
+        timestamp: Date.now(),
+        size: buffer.length
+      });
+
+    } catch (error) {
+      console.error('❌ Photo processing error:', error);
+      socket.emit('photoReceived', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  // Handle video data from camera
+  socket.on('videoData', async (data) => {
+    try {
+      console.log('🎥 Received video data from client:', socket.id);
+      
+      const { videoData, format = 'mp4', timestamp } = data;
+      
+      if (!videoData) {
+        console.error('❌ No video data provided');
+        return;
+      }
+
+      // Convert base64 to buffer
+      const buffer = Buffer.from(videoData, 'base64');
+
+      // Validate video size
+      if (buffer.length < 10000) {
+        console.log('🔇 Video data too small, skipping');
+        return;
+      }
+
+      if (buffer.length > 100000000) { // 100MB limit
+        console.log('🔇 Video data too large, skipping');
+        return;
+      }
+
+      console.log('🎥 Processing video:', {
+        size: buffer.length,
+        format,
+        timestamp,
+        originalSize: videoData.length
+      });
+
+      // Create media directory
+      const mediaDir = path.join(__dirname, '../media');
+      if (!fs.existsSync(mediaDir)) {
+        fs.mkdirSync(mediaDir, { recursive: true });
+      }
+
+      // Create videos subdirectory
+      const videosDir = path.join(mediaDir, 'videos');
+      if (!fs.existsSync(videosDir)) {
+        fs.mkdirSync(videosDir, { recursive: true });
+      }
+
+      // Save video with timestamp
+      const videoFileName = `video_${Date.now()}.${format}`;
+      const videoPath = path.join(videosDir, videoFileName);
+      fs.writeFileSync(videoPath, buffer);
+
+      console.log('📁 Saved video:', videoPath);
+
+      // Send confirmation back to client
+      socket.emit('videoReceived', {
+        success: true,
+        filename: videoFileName,
+        timestamp: Date.now(),
+        size: buffer.length
+      });
+
+    } catch (error) {
+      console.error('❌ Video processing error:', error);
+      socket.emit('videoReceived', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
   });
@@ -219,6 +357,90 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Media files endpoint
+app.get('/media/:type/:filename', (req, res) => {
+  try {
+    const { type, filename } = req.params;
+    
+    // Validate type
+    if (!['photos', 'videos'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid media type' });
+    }
+    
+    const mediaPath = path.join(__dirname, '../media', type, filename);
+    
+    if (!fs.existsSync(mediaPath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    
+    // Set appropriate content type
+    const ext = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream';
+    
+    if (ext === '.jpg' || ext === '.jpeg') {
+      contentType = 'image/jpeg';
+    } else if (ext === '.png') {
+      contentType = 'image/png';
+    } else if (ext === '.mp4') {
+      contentType = 'video/mp4';
+    } else if (ext === '.webm') {
+      contentType = 'video/webm';
+    }
+    
+    res.setHeader('Content-Type', contentType);
+    res.sendFile(mediaPath);
+    
+  } catch (error) {
+    console.error('Error serving media file:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// List media files endpoint
+app.get('/api/media/:type', (req, res) => {
+  try {
+    const { type } = req.params;
+    
+    // Validate type
+    if (!['photos', 'videos'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid media type' });
+    }
+    
+    const mediaDir = path.join(__dirname, '../media', type);
+    
+    if (!fs.existsSync(mediaDir)) {
+      return res.json({ files: [] });
+    }
+    
+    const files = fs.readdirSync(mediaDir)
+      .filter(file => {
+        const ext = path.extname(file).toLowerCase();
+        if (type === 'photos') {
+          return ['.jpg', '.jpeg', '.png'].includes(ext);
+        } else {
+          return ['.mp4', '.webm', '.mov'].includes(ext);
+        }
+      })
+      .map(file => {
+        const filePath = path.join(mediaDir, file);
+        const stats = fs.statSync(filePath);
+        return {
+          filename: file,
+          size: stats.size,
+          created: stats.birthtime,
+          modified: stats.mtime
+        };
+      })
+      .sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
+    
+    res.json({ files });
+    
+  } catch (error) {
+    console.error('Error listing media files:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 
 server.listen(PORT, () => {
@@ -226,7 +448,10 @@ server.listen(PORT, () => {
   console.log(`📡 Socket.IO server ready`);
   console.log(`🌤️ Weather API: http://localhost:${PORT}/api/weather`);
   console.log(`🎤 Transcription API: http://localhost:${PORT}/api/transcribe`);
+  console.log(`📸 Media API: http://localhost:${PORT}/api/media/photos`);
+  console.log(`🎥 Video API: http://localhost:${PORT}/api/media/videos`);
   console.log(`🔌 WebSocket: ws://localhost:${PORT}`);
+  console.log(`📱 Emergency triggers: audioData, photoData, videoData`);
 });
 
 export { io }; 

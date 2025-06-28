@@ -105,9 +105,26 @@ export async function POST(req: NextRequest) {
     console.log('🎤 Transcribed text:', transcription);
     console.log('⏰ Timestamp:', new Date().toISOString());
 
+    // Call the reasoning endpoint
+    let reasoningResult = null;
+    try {
+      const reasoningRes = await fetch(`${process.env.VERCEL_URL || 'http://localhost:3000'}/api/reasoning`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcription,
+          context: 'Live audio transcription'
+        }),
+      });
+      reasoningResult = await reasoningRes.json();
+    } catch (reasoningError) {
+      console.error('Reasoning API error:', reasoningError);
+    }
+
     return NextResponse.json({
       success: true,
-      transcription: transcription,
+      transcription,
+      reasoning: reasoningResult?.analysis || null,
       timestamp: Date.now(),
     });
 

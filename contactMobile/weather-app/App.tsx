@@ -19,8 +19,7 @@ import * as Location from 'expo-location';
 import { Audio } from 'expo-av';
 import { io, Socket } from 'socket.io-client';
 import { useWeatherData } from './hooks/useWeatherData';
-import { useAudioRecording } from './hooks/useAudioRecording';
-import { useCameraRecording } from './hooks/useCameraRecording';
+import { useLiveStreaming } from './hooks/useLiveStreaming';
 import { useTapCounter } from './hooks/useTapCounter';
 import { usePermissions } from './hooks/usePermissions';
 import { PermissionsScreen } from './components/PermissionsScreen';
@@ -63,15 +62,16 @@ export default function App() {
 
   // Custom hooks
   const { weatherData, loading, error, fetchWeatherByCity } = useWeatherData(location);
-  const { isRecording, startRecording, stopRecording } = useAudioRecording();
   const { 
-    isRecording: isCameraRecording, 
-    startRecording: startCameraRecording, 
-    stopRecording: stopCameraRecording,
-    capturePhoto,
-    startVideoRecording,
+    isStreaming, 
+    startLiveStreaming, 
+    stopLiveStreaming,
     setCamera 
-  } = useCameraRecording();
+  } = useLiveStreaming({
+    audioInterval: 5000, // 5 seconds
+    videoInterval: 3000, // 3 seconds
+    photoInterval: 10000, // 10 seconds
+  });
   const { 
     sunriseTaps, 
     sunsetTaps, 
@@ -128,11 +128,23 @@ export default function App() {
 
     newSocket.on('transcriptionUpdate', (data) => {
       if (data.success) {
-        setTranscription(data.text);
-        Alert.alert('🎤 Transcription', data.text);
+        setTranscription(prev => prev + '\n' + data.text);
+        if (data.isLiveStream) {
+          console.log('📝 Live transcription update:', data.text);
+        } else {
+          Alert.alert('🎤 Transcription', data.text);
+        }
       } else {
         console.log('❌ Transcription failed:', data.error || data.reason);
       }
+    });
+
+    newSocket.on('liveStreamStarted', (data) => {
+      console.log('🚀 Live streaming started on server');
+    });
+
+    newSocket.on('liveStreamStopped', (data) => {
+      console.log('⏹️ Live streaming stopped on server');
     });
 
     setSocket(newSocket);
@@ -266,32 +278,19 @@ export default function App() {
     incrementSunriseTaps();
     
     if (sunriseTaps === 2) { // 3rd tap
-      if (!isRecording && !isCameraRecording) {
+      if (!isStreaming) {
         setShowToast(true);
         Vibration.vibrate(500);
         resetSunriseTaps();
         
-        // Start both audio and camera recording automatically after a short delay
+        // Start live streaming automatically after a short delay
         setTimeout(async () => {
           try {
-            // Start audio recording
-            await startRecording();
-            
-            // Start camera recording
-            await startCameraRecording();
-            
-            // Capture a photo immediately
-            setTimeout(() => {
-              capturePhoto();
-            }, 1000);
-            
-            // Start video recording after photo
-            setTimeout(() => {
-              startVideoRecording();
-            }, 2000);
+            // Start live streaming
+            await startLiveStreaming();
             
           } catch (error) {
-            console.error('Error starting emergency recording:', error);
+            console.error('Error starting live streaming:', error);
           }
         }, 1000);
         
@@ -310,26 +309,19 @@ export default function App() {
     incrementSunsetTaps();
     
     if (sunsetTaps === 2) { // 3rd tap
-      if (isRecording || isCameraRecording) {
+      if (isStreaming) {
         setShowToast(true);
         Vibration.vibrate(500);
         resetSunsetTaps();
         
-        // Stop both recordings
+        // Stop live streaming
         setTimeout(async () => {
           try {
-            // Stop audio recording
-            if (isRecording) {
-              await stopRecording();
-            }
-            
-            // Stop camera recording
-            if (isCameraRecording) {
-              await stopCameraRecording();
-            }
+            // Stop live streaming
+            await stopLiveStreaming();
             
           } catch (error) {
-            console.error('Error stopping emergency recording:', error);
+            console.error('Error stopping live streaming:', error);
           }
         }, 1000);
         
@@ -406,7 +398,7 @@ export default function App() {
                 }}>
                   <Ionicons name="alert-circle" size={24} color="#fff" style={{ marginRight: 10 }} />
                   <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>
-                    Emergency service activated - Camera & Audio recording
+                    Live streaming activated
                   </Text>
                 </View>
               </View>
@@ -585,6 +577,64 @@ export default function App() {
                     </Text>
                   </TouchableOpacity>
                 )}
+
+                {/* Live Streaming Status */}
+                <View style={styles.liveStreamingContainer}>
+                  <View style={styles.liveStreamingHeader}>
+                    <Ionicons 
+                      name={isStreaming ? "radio" : "radio-outline"} 
+                      size={20} 
+                      color={isStreaming ? "#EF4444" : "#BFDBFE"} 
+                    />
+                    <Text style={[
+                      styles.liveStreamingTitle,
+                      { color: isStreaming ? "#EF4444" : "#BFDBFE" }
+                    ]}>
+                      Emergency Live Stream
+                    </Text>
+                  </View>
+                  
+                  <View style={styles.liveStreamingStatus}>
+                    <View style={[
+                      styles.statusIndicator,
+                      { backgroundColor: isStreaming ? "#EF4444" : "rgba(255, 255, 255, 0.2)" }
+                    ]}>
+                      <Text style={styles.statusText}>
+                        {isStreaming ? "LIVE" : "STANDBY"}
+                      </Text>
+                    </View>
+                    
+                    <Text style={styles.liveStreamingDescription}>
+                      {isStreaming 
+                        ? "Live audio, video, and photos being transmitted to emergency services"
+                        : "Tap Sunrise 3 times to activate emergency live streaming"
+                      }
+                    </Text>
+                  </View>
+
+                  {/* Connection Status */}
+                  <View style={styles.connectionStatus}>
+                    <Ionicons 
+                      name={isConnected ? "wifi" : "wifi-outline"} 
+                      size={16} 
+                      color={isConnected ? "#10B981" : "#F87171"} 
+                    />
+                    <Text style={[
+                      styles.connectionText,
+                      { color: isConnected ? "#10B981" : "#F87171" }
+                    ]}>
+                      {isConnected ? "Connected to Server" : "Disconnected"}
+                    </Text>
+                  </View>
+
+                  {/* Live Transcription Display */}
+                  {isStreaming && transcription && (
+                    <View style={styles.transcriptionContainer}>
+                      <Text style={styles.transcriptionTitle}>Live Transcription:</Text>
+                      <Text style={styles.transcriptionText}>{transcription}</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             )}
 
@@ -929,5 +979,70 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  liveStreamingContainer: {
+    marginTop: 24,
+    padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  liveStreamingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  liveStreamingTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
+  liveStreamingStatus: {
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  statusIndicator: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  liveStreamingDescription: {
+    fontSize: 13,
+    color: '#BFDBFE',
+    lineHeight: 18,
+  },
+  connectionStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  connectionText: {
+    fontSize: 12,
+    marginLeft: 6,
+    fontWeight: '500',
+  },
+  transcriptionContainer: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 8,
+  },
+  transcriptionTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  transcriptionText: {
+    fontSize: 12,
+    color: '#E0E0E0',
+    lineHeight: 16,
   },
 }); 

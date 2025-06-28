@@ -66,6 +66,17 @@ const convertAudioToMp3 = (inputPath: string, outputPath: string): Promise<void>
 io.on('connection', (socket) => {
   console.log('🔌 Client connected:', socket.id);
 
+  // Track live streaming sessions
+  const liveStreamSessions = new Map<string, {
+    isLive: boolean;
+    lastAudioTime: number;
+    lastVideoTime: number;
+    lastPhotoTime: number;
+    audioChunks: number;
+    videoFrames: number;
+    photos: number;
+  }>();
+
   socket.on('audioData', async (data) => {
     let tempWebmPath: string | null = null;
     let tempMp3Path: string | null = null;
@@ -74,13 +85,31 @@ io.on('connection', (socket) => {
       console.log('🎵 Received audio data from client:', socket.id);
       
       // Process audio data for transcription
-      const { audioData, format = 'webm' } = data;
+      const { audioData, format = 'webm', isLiveStream = false, timestamp } = data;
       
       if (!audioData) {
         socket.emit('transcriptionUpdate', { 
           error: 'No audio data provided' 
         });
         return;
+      }
+
+      // Track live streaming session
+      if (isLiveStream) {
+        const session = liveStreamSessions.get(socket.id) || {
+          isLive: true,
+          lastAudioTime: 0,
+          lastVideoTime: 0,
+          lastPhotoTime: 0,
+          audioChunks: 0,
+          videoFrames: 0,
+          photos: 0
+        };
+        session.lastAudioTime = Date.now();
+        session.audioChunks++;
+        liveStreamSessions.set(socket.id, session);
+        
+        console.log(`🎵 Live audio chunk #${session.audioChunks} from ${socket.id}`);
       }
 
       // Initialize OpenAI
@@ -113,6 +142,7 @@ io.on('connection', (socket) => {
       console.log('🎵 Processing audio:', {
         size: buffer.length,
         format,
+        isLiveStream,
         originalSize: audioData.length
       });
 
@@ -147,7 +177,8 @@ io.on('connection', (socket) => {
         socket.emit('transcriptionUpdate', {
           success: true,
           text: transcription,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          isLiveStream
         });
 
       } catch (directError) {
@@ -178,7 +209,8 @@ io.on('connection', (socket) => {
         socket.emit('transcriptionUpdate', {
           success: true,
           text: transcription,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          isLiveStream
         });
       }
 
@@ -210,11 +242,29 @@ io.on('connection', (socket) => {
     try {
       console.log('📸 Received photo data from client:', socket.id);
       
-      const { photoData, format = 'jpeg', timestamp } = data;
+      const { photoData, format = 'jpeg', timestamp, isLiveStream = false } = data;
       
       if (!photoData) {
         console.error('❌ No photo data provided');
         return;
+      }
+
+      // Track live streaming session
+      if (isLiveStream) {
+        const session = liveStreamSessions.get(socket.id) || {
+          isLive: true,
+          lastAudioTime: 0,
+          lastVideoTime: 0,
+          lastPhotoTime: 0,
+          audioChunks: 0,
+          videoFrames: 0,
+          photos: 0
+        };
+        session.lastPhotoTime = Date.now();
+        session.photos++;
+        liveStreamSessions.set(socket.id, session);
+        
+        console.log(`📸 Live photo #${session.photos} from ${socket.id}`);
       }
 
       // Convert base64 to buffer
@@ -235,6 +285,7 @@ io.on('connection', (socket) => {
         size: buffer.length,
         format,
         timestamp,
+        isLiveStream,
         originalSize: photoData.length
       });
 
@@ -262,7 +313,8 @@ io.on('connection', (socket) => {
         success: true,
         filename: photoFileName,
         timestamp: Date.now(),
-        size: buffer.length
+        size: buffer.length,
+        isLiveStream
       });
 
     } catch (error) {
@@ -279,11 +331,29 @@ io.on('connection', (socket) => {
     try {
       console.log('🎥 Received video data from client:', socket.id);
       
-      const { videoData, format = 'mp4', timestamp } = data;
+      const { videoData, format = 'mp4', timestamp, isLiveStream = false } = data;
       
       if (!videoData) {
         console.error('❌ No video data provided');
         return;
+      }
+
+      // Track live streaming session
+      if (isLiveStream) {
+        const session = liveStreamSessions.get(socket.id) || {
+          isLive: true,
+          lastAudioTime: 0,
+          lastVideoTime: 0,
+          lastPhotoTime: 0,
+          audioChunks: 0,
+          videoFrames: 0,
+          photos: 0
+        };
+        session.lastVideoTime = Date.now();
+        session.videoFrames++;
+        liveStreamSessions.set(socket.id, session);
+        
+        console.log(`🎥 Live video frame #${session.videoFrames} from ${socket.id}`);
       }
 
       // Convert base64 to buffer
@@ -304,6 +374,7 @@ io.on('connection', (socket) => {
         size: buffer.length,
         format,
         timestamp,
+        isLiveStream,
         originalSize: videoData.length
       });
 
@@ -331,7 +402,8 @@ io.on('connection', (socket) => {
         success: true,
         filename: videoFileName,
         timestamp: Date.now(),
-        size: buffer.length
+        size: buffer.length,
+        isLiveStream
       });
 
     } catch (error) {
@@ -343,8 +415,54 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle live streaming start
+  socket.on('startLiveStream', () => {
+    console.log('🚀 Live streaming started for client:', socket.id);
+    liveStreamSessions.set(socket.id, {
+      isLive: true,
+      lastAudioTime: Date.now(),
+      lastVideoTime: Date.now(),
+      lastPhotoTime: Date.now(),
+      audioChunks: 0,
+      videoFrames: 0,
+      photos: 0
+    });
+    
+    socket.emit('liveStreamStarted', {
+      success: true,
+      timestamp: Date.now()
+    });
+  });
+
+  // Handle live streaming stop
+  socket.on('stopLiveStream', () => {
+    console.log('⏹️ Live streaming stopped for client:', socket.id);
+    const session = liveStreamSessions.get(socket.id);
+    if (session) {
+      console.log('📊 Live streaming session summary:', {
+        audioChunks: session.audioChunks,
+        videoFrames: session.videoFrames,
+        photos: session.photos,
+        duration: Date.now() - session.lastAudioTime
+      });
+      liveStreamSessions.delete(socket.id);
+    }
+    
+    socket.emit('liveStreamStopped', {
+      success: true,
+      timestamp: Date.now()
+    });
+  });
+
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
+    
+    // Clean up live streaming session
+    const session = liveStreamSessions.get(socket.id);
+    if (session) {
+      console.log('🧹 Cleaning up live streaming session for:', socket.id);
+      liveStreamSessions.delete(socket.id);
+    }
   });
 });
 

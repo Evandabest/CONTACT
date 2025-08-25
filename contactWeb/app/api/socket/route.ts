@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 
 // Use different runtime based on environment
-export const runtime = process.env.NODE_ENV === 'development' ? 'nodejs' : 'edge';
+export const runtime = 'nodejs';
 
 // Store active connections
 let connections: WebSocket[] = [];

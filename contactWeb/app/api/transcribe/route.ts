@@ -52,29 +52,63 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Validate format compatibility with OpenAI Whisper
+    const supportedFormats = ['webm', 'ogg', 'wav', 'mp3', 'm4a', 'mp4'];
+    const isFormatSupported = supportedFormats.includes(format.toLowerCase());
+    
+    if (!isFormatSupported) {
+      console.log('⚠️ Unsupported format for Whisper:', format);
+      return NextResponse.json({
+        success: false,
+        transcription: '',
+        reason: `Audio format '${format}' is not supported by OpenAI Whisper. Supported formats: ${supportedFormats.join(', ')}`,
+        timestamp: Date.now(),
+      });
+    }
+
+    // Basic validation: Check if the buffer has content
+    const hasContent = buffer.length > 0 && buffer.slice(0, Math.min(100, buffer.length)).some(byte => byte !== 0);
+    if (!hasContent) {
+      console.log('⚠️ Audio buffer appears to be empty or corrupted');
+      return NextResponse.json({
+        success: false,
+        transcription: '',
+        reason: 'Audio data appears to be empty or corrupted',
+        timestamp: Date.now(),
+      });
+    }
+
     // Determine the correct MIME type based on the format
     let mimeType: string;
     let fileName: string;
     
     switch (format.toLowerCase()) {
       case 'webm':
-        mimeType = 'audio/webm;codecs=opus';
+        mimeType = 'audio/webm';
         fileName = 'audio.webm';
-        break;
-      case 'mp4':
-        mimeType = 'audio/mp4';
-        fileName = 'audio.mp4';
-        break;
-      case 'ogg':
-        mimeType = 'audio/ogg;codecs=opus';
-        fileName = 'audio.ogg';
         break;
       case 'wav':
         mimeType = 'audio/wav';
         fileName = 'audio.wav';
         break;
+      case 'ogg':
+        mimeType = 'audio/ogg';
+        fileName = 'audio.ogg';
+        break;
+      case 'mp3':
+        mimeType = 'audio/mp3';
+        fileName = 'audio.mp3';
+        break;
+      case 'm4a':
+        mimeType = 'audio/m4a';
+        fileName = 'audio.m4a';
+        break;
+      case 'mp4':
+        mimeType = 'audio/mp4';
+        fileName = 'audio.mp4';
+        break;
       default:
-        mimeType = 'audio/webm;codecs=opus';
+        mimeType = 'audio/webm';
         fileName = 'audio.webm';
     }
 
@@ -92,6 +126,10 @@ export async function POST(req: NextRequest) {
       type: file.type,
       size: file.size
     });
+    console.log('🔍 Buffer details:', {
+      length: buffer.length,
+      firstBytes: Array.from(buffer.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')
+    });
 
     // Transcribe with OpenAI Whisper
     const transcription = await openai.audio.transcriptions.create({
@@ -105,26 +143,9 @@ export async function POST(req: NextRequest) {
     console.log('🎤 Transcribed text:', transcription);
     console.log('⏰ Timestamp:', new Date().toISOString());
 
-    // Call the reasoning endpoint
-    let reasoningResult = null;
-    try {
-      const reasoningRes = await fetch(`${process.env.VERCEL_URL || 'http://localhost:3000'}/api/reasoning`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transcription,
-          context: 'Live audio transcription'
-        }),
-      });
-      reasoningResult = await reasoningRes.json();
-    } catch (reasoningError) {
-      console.error('Reasoning API error:', reasoningError);
-    }
-
     return NextResponse.json({
       success: true,
       transcription,
-      reasoning: reasoningResult?.analysis || null,
       timestamp: Date.now(),
     });
 
@@ -134,10 +155,10 @@ export async function POST(req: NextRequest) {
     // Provide more specific error information
     let errorMessage = 'Failed to transcribe audio';
     if (error instanceof Error) {
-      if (error.message.includes('Invalid file format')) {
-        errorMessage = 'Audio format not supported. Please try again.';
+      if (error.message.includes('Invalid file format') || error.message.includes('could not be decoded')) {
+        errorMessage = 'Audio format not supported by OpenAI Whisper. Please try recording in WebM, OGG, or WAV format.';
       } else if (error.message.includes('400')) {
-        errorMessage = 'Audio file format issue. Please try again.';
+        errorMessage = 'Audio file format issue. Please try recording in a different format.';
       } else {
         errorMessage = error.message;
       }

@@ -36,24 +36,37 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
     setState(prev => ({ ...prev, isSupported }));
   }, []);
 
-  // Get supported MIME type
+  // Get supported MIME type - Use basic format for Whisper compatibility
   const getSupportedMimeType = () => {
-    const types = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/mp4',
-      'audio/ogg;codecs=opus',
-      'audio/wav'
+    // Try basic formats that work reliably with Whisper
+    const basicTypes = [
+      'audio/webm',              // Basic WebM (most compatible)
+      'audio/wav',               // WAV format (very reliable)
+      'audio/ogg',               // OGG format (good compatibility)
     ];
     
-    for (const type of types) {
+    for (const type of basicTypes) {
       if (MediaRecorder.isTypeSupported(type)) {
-        console.log('Using MIME type:', type);
+        console.log('✅ Using audio format for Whisper compatibility:', type);
         return type;
       }
     }
     
-    console.warn('No supported MIME type found, using default');
+    // If none of the basic types work, try any supported type
+    const fallbackTypes = [
+      'audio/mp3',
+      'audio/mp4',
+      'audio/m4a',
+    ];
+    
+    for (const type of fallbackTypes) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        console.log('⚠️ Using fallback format:', type);
+        return type;
+      }
+    }
+    
+    console.error('❌ No audio format supported by this browser');
     return '';
   };
 
@@ -66,51 +79,34 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
 
     try {
       console.log(`🎵 Combining ${audioChunksRef.current.length} audio chunks...`);
-      
-      // Get the MIME type from the first chunk
       const firstChunk = audioChunksRef.current[0];
       const mimeType = firstChunk?.type || 'audio/webm;codecs=opus';
-      
-      // Validate that all chunks have the same MIME type
       const allSameType = audioChunksRef.current.every(chunk => chunk.type === mimeType);
       if (!allSameType) {
         console.warn('⚠️ Audio chunks have different MIME types, using first chunk type:', mimeType);
         console.log('Chunk types:', audioChunksRef.current.map(chunk => chunk.type));
       }
-      
-      console.log('🎵 Using MIME type for combined audio:', mimeType);
-      
-      // Combine all audio chunks into a single blob with the correct MIME type
-      const combinedBlob = new Blob(audioChunksRef.current, { 
-        type: mimeType
-      });
-      
+      const combinedBlob = new Blob(audioChunksRef.current, { type: mimeType });
       console.log(`📊 Combined audio size: ${combinedBlob.size} bytes`);
       console.log(`🎵 Combined audio type: ${combinedBlob.type}`);
-      
-      // Validate the combined blob
       if (combinedBlob.size < 2000) {
         console.log('🔇 Combined audio too small, skipping transcription');
-        // Reset batch
         audioChunksRef.current = [];
         chunkCountRef.current = 0;
         hasSpeechInBatchRef.current = false;
         return;
       }
       
-      // Send the combined audio to the callback
-      onAudioData(combinedBlob);
-      
-      // Reset batch
+      // Send the combined audio to the callback (for transcription via Pusher)
+      if (onAudioData) {
+        onAudioData(combinedBlob);
+      }
       audioChunksRef.current = [];
       chunkCountRef.current = 0;
       hasSpeechInBatchRef.current = false;
-      
       console.log('🔄 Batch reset, starting new batch');
-      
     } catch (error) {
       console.error('Error sending batch to transcription:', error);
-      // Reset batch on error
       audioChunksRef.current = [];
       chunkCountRef.current = 0;
       hasSpeechInBatchRef.current = false;
@@ -127,13 +123,31 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
         return;
       }
 
-      // Create audio context to analyze the audio
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      // Try to create audio context to analyze the audio
+      let audioContext: AudioContext | null = null;
+      try {
+        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      } catch (error) {
+        console.log('Could not create AudioContext, using size-based detection:', error);
+        // Fallback to size-based detection
+        resolve(audioData.size > 2000);
+        return;
+      }
+
       const reader = new FileReader();
       
       reader.onload = async () => {
         try {
           const arrayBuffer = reader.result as ArrayBuffer;
+          
+          // Check if the audio data is valid
+          if (arrayBuffer.byteLength === 0) {
+            console.log('Empty audio buffer, no content');
+            audioContext.close();
+            resolve(false);
+            return;
+          }
+
           const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
           
           // Get audio data
@@ -155,10 +169,18 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
           audioContext.close();
           resolve(hasContent);
         } catch (error) {
-          console.log('Audio analysis failed, assuming no content:', error);
+          console.log('Audio analysis failed, using size-based detection:', error);
           audioContext.close();
-          resolve(false);
+          // Fallback to size-based detection for encoding errors
+          resolve(audioData.size > 2000);
         }
+      };
+      
+      reader.onerror = (error) => {
+        console.log('FileReader error, using size-based detection:', error);
+        audioContext.close();
+        // Fallback to size-based detection
+        resolve(audioData.size > 2000);
       };
       
       reader.readAsArrayBuffer(audioData);
@@ -277,54 +299,55 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
             }
           } else {
             console.log('🔇 Audio chunk contains no meaningful content, skipping');
-            // Still add to batch to maintain timing, but don't mark as having speech
-            audioChunksRef.current.push(event.data);
+            // Still increment count but don't add to batch
             chunkCountRef.current++;
             
-            console.log(`📦 Batch progress: ${chunkCountRef.current}/${BATCH_SIZE} chunks (silent)`);
-            
-            // Only send batch if it contains speech and we have enough chunks
-            if (chunkCountRef.current >= BATCH_SIZE && hasSpeechInBatchRef.current) {
-              console.log('📤 Sending batch to transcription (21 seconds of audio with speech)');
+            // If we have enough chunks and none have speech, send anyway
+            if (chunkCountRef.current >= BATCH_SIZE) {
+              console.log('📤 Sending batch to transcription (21 seconds of audio, no speech detected)');
               await sendBatchToTranscription();
-            } else if (chunkCountRef.current >= BATCH_SIZE && !hasSpeechInBatchRef.current) {
-              console.log('🔇 Batch contains no speech, discarding batch');
-              // Reset batch without sending
-              audioChunksRef.current = [];
-              chunkCountRef.current = 0;
-              hasSpeechInBatchRef.current = false;
             }
           }
-        }
-        
-        // If still active, continue recording
-        if (isActiveRef.current && mediaRecorderRef.current) {
+          
           console.log('Continuing to next chunk...');
-          // Stop current recording to get the data, then start next chunk
-          mediaRecorderRef.current.stop();
+          
+          // Continue recording if still active - but only if recorder is in inactive state
+          if (isActiveRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
+            console.log('Starting next 3-second chunk...');
+            try {
+              mediaRecorderRef.current.start(3000); // Start next 3-second chunk
+            } catch (error) {
+              console.error('Error starting next chunk:', error);
+              // If there's an error, try to restart the recording
+              if (isActiveRef.current) {
+                console.log('Attempting to restart recording...');
+                setTimeout(() => {
+                  if (isActiveRef.current) {
+                    startRecording();
+                  }
+                }, 1000);
+              }
+            }
+          } else if (isActiveRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            console.log('MediaRecorder still recording, waiting for it to stop...');
+          }
         }
       };
 
-      // Handle recording state changes
-      mediaRecorder.onstart = () => {
-        console.log('Recording chunk started');
-        setState(prev => ({ ...prev, isRecording: true, error: null }));
-        
-        // Keep the stream alive by preventing it from being garbage collected
-        if (streamRef.current) {
-          (streamRef.current as MediaStream).getTracks().forEach(track => {
-            track.enabled = true;
-          });
-        }
-      };
-
+      // Handle recording stop
       mediaRecorder.onstop = () => {
         console.log('Recording chunk stopped');
+        
+        // If we have any remaining chunks, send them
+        if (audioChunksRef.current.length > 0) {
+          console.log('📤 Sending final batch with remaining chunks');
+          sendBatchToTranscription();
+        }
         
         // If still active, start the next chunk after a short delay
         if (isActiveRef.current && mediaRecorderRef.current) {
           setTimeout(() => {
-            if (isActiveRef.current && mediaRecorderRef.current) {
+            if (isActiveRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
               try {
                 console.log('Starting next 3-second chunk...');
                 mediaRecorderRef.current.start(3000);
@@ -348,83 +371,83 @@ export const useAudioRecorder = (onAudioData: (data: Blob) => void) => {
         }
       };
 
+      // Handle errors
       mediaRecorder.onerror = (event) => {
         console.error('MediaRecorder error:', event);
         setState(prev => ({ 
           ...prev, 
-          isRecording: false,
-          error: 'Recording error occurred' 
+          error: 'Recording error occurred. Please try again.' 
         }));
       };
 
-      // Start recording continuously with 3-second timeslices
-      console.log('Starting continuous MediaRecorder...');
-      mediaRecorder.start(3000);
+      // Start recording
+      mediaRecorder.start(3000); // Start with 3-second chunks
+      setState(prev => ({ ...prev, isRecording: true, error: null }));
+      console.log('✅ Recording started successfully');
 
     } catch (error) {
       console.error('Error starting recording:', error);
       setState(prev => ({ 
         ...prev, 
-        isRecording: false,
-        error: `Failed to start recording: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        error: error instanceof Error ? error.message : 'Failed to start recording' 
       }));
     }
-  }, [requestPermission, onAudioData, state.isRecording]);
+  }, [state.isRecording, requestPermission, sendBatchToTranscription]);
 
   const stopRecording = useCallback(() => {
-    console.log('Manually stopping recording');
-    isActiveRef.current = false;
-    
-    // Send any remaining chunks in the batch only if it contains speech
-    if (audioChunksRef.current.length > 0 && hasSpeechInBatchRef.current) {
-      console.log(`📤 Sending final batch with ${audioChunksRef.current.length} chunks (contains speech)`);
-      sendBatchToTranscription();
-    } else if (audioChunksRef.current.length > 0 && !hasSpeechInBatchRef.current) {
-      console.log(`🔇 Final batch contains no speech, discarding ${audioChunksRef.current.length} chunks`);
-      // Reset batch without sending
-      audioChunksRef.current = [];
-      chunkCountRef.current = 0;
-      hasSpeechInBatchRef.current = false;
-    }
-    
-    if (mediaRecorderRef.current && state.isRecording) {
-      mediaRecorderRef.current.stop();
-    }
-  }, [state.isRecording]);
-
-  const cleanup = useCallback(() => {
-    console.log('Cleaning up audio recorder');
-    isActiveRef.current = false;
-    
-    if (mediaRecorderRef.current) {
-      if (state.isRecording) {
+    try {
+      isActiveRef.current = false;
+      
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
-      mediaRecorderRef.current = null;
+      
+      setState(prev => ({ ...prev, isRecording: false }));
+      console.log('🛑 Recording stopped');
+      
+    } catch (error) {
+      console.error('Error stopping recording:', error);
     }
+  }, []);
 
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        console.log('Stopping track:', track.kind);
-        track.stop();
-      });
-      streamRef.current = null;
+  const cleanup = useCallback(() => {
+    try {
+      isActiveRef.current = false;
+      
+      if (mediaRecorderRef.current) {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+        }
+        mediaRecorderRef.current = null;
+      }
+      
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+      
+      setState(prev => ({ 
+        ...prev, 
+        isRecording: false, 
+        hasPermission: false,
+        error: null 
+      }));
+      
+      console.log('🧹 Audio recorder cleaned up');
+    } catch (error) {
+      console.error('Error during cleanup:', error);
     }
-
-    setState(prev => ({ 
-      ...prev, 
-      isRecording: false,
-      hasPermission: false 
-    }));
-  }, [state.isRecording]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Only cleanup if we're not actively recording
-      if (!isActiveRef.current) {
-        cleanup();
-      }
+      cleanup();
     };
   }, [cleanup]);
 

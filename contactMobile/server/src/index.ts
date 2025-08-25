@@ -7,6 +7,7 @@ import multer from 'multer';
 import OpenAI from 'openai';
 import { weatherRouter } from './routes/weather';
 import { transcribeRouter } from './routes/transcribe';
+import geocodeRouter from './routes/geocode';
 import fs from 'fs';
 import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
@@ -42,6 +43,7 @@ const upload = multer({
 // Routes
 app.use('/api/weather', weatherRouter);
 app.use('/api/transcribe', transcribeRouter);
+app.use('/api/geocode', geocodeRouter);
 
 // Helper function to convert audio using FFmpeg
 const convertAudioToMp3 = (inputPath: string, outputPath: string): Promise<void> => {

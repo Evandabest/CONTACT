@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Search, MapPin, Thermometer, Droplets, Wind, Eye, Sunrise, Sunset, Navigation, Mic, MicOff } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Search, MapPin, Thermometer, Droplets, Wind, Eye, Sunrise, Sunset, Navigation, Mic, MicOff, Phone, Video, VideoOff, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
-import { useWebSocket } from './hooks/useWebSocket';
+import { usePusher } from './hooks/usePusher';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
+import { useCamera } from './hooks/useCamera';
+import { useReverseGeocode, formatAddressForDisplay } from './hooks/useReverseGeocode';
 
 interface WeatherData {
   name: string;
@@ -46,18 +48,27 @@ export default function WeatherApp() {
   const [sunriseTapCount, setSunriseTapCount] = useState(0);
   const [sunsetTapCount, setSunsetTapCount] = useState(0);
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('info');
 
-  // WebSocket and Audio Recording hooks
+  // Pusher and Audio Recording hooks
   const {
     isConnected,
     isRecording,
     transcription,
-    error: wsError,
+    analysis,
+    emergencyCall: emergencyCallResult,
+    error: pusherError,
     sendAudioData,
-    startRecording: wsStartRecording,
-    stopRecording: wsStopRecording,
+    startRecording: pusherStartRecording,
+    stopRecording: pusherStopRecording,
     clearTranscription,
-  } = useWebSocket();
+    initiateEmergencyCall,
+    isStreamingVideo,
+    remoteStream,
+    startVideoCall,
+    stopVideoCall,
+  } = usePusher();
 
   const {
     isRecording: isAudioRecording,
@@ -68,6 +79,40 @@ export default function WeatherApp() {
     stopRecording: audioStopRecording,
     requestPermission: requestAudioPermission,
   } = useAudioRecorder(sendAudioData);
+
+  // Camera hook
+  const {
+    stream: localStream,
+    error: cameraError,
+    isStreaming: isCameraStreaming,
+    requestPermission: requestCameraPermission,
+    startStreaming: startCameraStreaming,
+    stopStreaming: stopCameraStreaming,
+  } = useCamera();
+
+  // Reverse Geocoding hook
+  const {
+    address,
+    loading: geocodeLoading,
+    error: geocodeError,
+    geocodeLocation,
+    clearAddress,
+  } = useReverseGeocode();
+
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (localStream && localVideoRef.current) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (remoteStream && remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
 
   const getWeatherIcon = (iconCode: string) => {
     return `https://openweathermap.org/img/wn/${iconCode}@2x.png`;
@@ -121,15 +166,22 @@ export default function WeatherApp() {
     setError('');
     
     try {
-      const response = await fetch(
-        `/api/weather?lat=${lat}&lon=${lon}`
-      );
+      // Fetch weather data and reverse geocode simultaneously
+      const [weatherResponse, geocodePromise] = await Promise.allSettled([
+        fetch(`/api/weather?lat=${lat}&lon=${lon}`),
+        geocodeLocation(lat, lon)
+      ]);
       
-      console.log('API Response status:', response.status);
+      if (weatherResponse.status === 'fulfilled' && weatherResponse.value.ok) {
+        const data = await weatherResponse.value.json();
+        console.log('Weather data received:', data);
+        setWeather(data);
+      } else {
+        throw new Error('Failed to fetch weather data');
+      }
       
-      const data = await response.json();
-      console.log('Weather data received:', data);
-      setWeather(data);
+      // Geocoding is handled by the hook, no need to handle the promise here
+      
     } catch (err) {
       console.error('Fetch error:', err);
       setError('Failed to fetch weather data. Please try searching for a city.');
@@ -141,6 +193,9 @@ export default function WeatherApp() {
   const fetchWeather = async (cityName: string) => {
     setLoading(true);
     setError('');
+    
+    // Clear previous address data when searching by city
+    clearAddress();
     
     try {
       const response = await fetch(
@@ -168,6 +223,9 @@ export default function WeatherApp() {
 
     setLoading(true);
     setError('');
+    
+    // Clear previous address data when getting new location
+    clearAddress();
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
@@ -229,72 +287,113 @@ export default function WeatherApp() {
     }
   };
 
-  const handleSunriseTap = () => {
-    const newTapCount = sunriseTapCount + 1;
-    setSunriseTapCount(newTapCount);
-    
-    if (newTapCount === 3) {
-      // Start recording
-      if (!isRecording) {
-        setShowToast(true);
-        setSunriseTapCount(0); // Reset counter
-        
-        // Start recording automatically after a short delay
-        setTimeout(async () => {
-          if (!hasAudioPermission) {
-            const granted = await requestAudioPermission();
-            if (!granted) return;
-          }
-          
-          wsStartRecording();
-          audioStartRecording();
-        }, 1000);
-        
-        // Hide toast after 3 seconds
-        setTimeout(() => {
-          setShowToast(false);
-        }, 3000);
+  const showToastMessage = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToastMessage(message);
+    setToastType(type);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 3000);
+  };
+
+  const handleSunriseTap = async () => {
+    const newSunriseTapCount = sunriseTapCount + 1;
+    setSunriseTapCount(newSunriseTapCount);
+
+    if (newSunriseTapCount === 1) {
+      // First tap: Request audio permission
+      if (!hasAudioPermission) {
+        showToastMessage('Requesting audio permission...', 'info');
+        try {
+          await requestAudioPermission();
+          showToastMessage('Audio permission granted! Tap again for video permission.', 'success');
+        } catch (error) {
+          showToastMessage('Audio permission denied. Please enable in browser settings.', 'error');
+        }
       } else {
-        // Already recording, just reset counter
-        setSunriseTapCount(0);
+        showToastMessage('Audio permission already granted! Tap again for video permission.', 'info');
       }
+    } else if (newSunriseTapCount === 2) {
+      // Second tap: Request video permission
+      if (!localStream) {
+        showToastMessage('Requesting camera permission...', 'info');
+        try {
+          await requestCameraPermission();
+          showToastMessage('Camera permission granted! Tap once more to start recording.', 'success');
+        } catch (error) {
+          showToastMessage('Camera permission denied. Please enable in browser settings.', 'error');
+        }
+      } else {
+        showToastMessage('Camera permission already granted! Tap once more to start recording.', 'info');
+      }
+    } else if (newSunriseTapCount === 3) {
+      // Third tap: Start recording and video
+      if (isRecording) {
+        showToastMessage('Already recording!', 'error');
+        setSunriseTapCount(0);
+        return;
+      }
+      
+      if (!hasAudioPermission) {
+        showToastMessage('Audio permission required. Please tap to request permissions first.', 'error');
+        setSunriseTapCount(0);
+        return;
+      }
+      
+      showToastMessage('Starting recording and video stream...', 'success');
+      setSunriseTapCount(0); // Reset count after triggering
+      
+      // Start recording and video with a slight delay
+      setTimeout(async () => {
+        pusherStartRecording();
+        audioStartRecording();
+        
+        // Start camera and video call if we have camera permission
+        if (localStream) {
+          startVideoCall(localStream);
+        } else {
+          // Try to start camera if we don't have stream yet
+          const stream = await startCameraStreaming();
+          if (stream) {
+            startVideoCall(stream);
+          }
+        }
+      }, 1000);
     }
-    
-    // Reset counter if too much time passes between taps
+
+    // Reset tap count after a delay
     setTimeout(() => {
-      setSunriseTapCount(0);
-    }, 2000);
+      setSunriseTapCount(currentCount => currentCount === newSunriseTapCount ? 0 : currentCount);
+    }, 3000); // Reset after 3 seconds
   };
 
   const handleSunsetTap = () => {
-    const newTapCount = sunsetTapCount + 1;
-    setSunsetTapCount(newTapCount);
+    // Only allow if weather data is loaded
+    if (!weather) return;
+
+    setSunsetTapCount(prev => prev + 1);
     
-    if (newTapCount === 3) {
-      // Stop recording
-      if (isRecording) {
-        setShowToast(true);
-        setSunsetTapCount(0); // Reset counter
-        
-        // Stop recording
-        audioStopRecording();
-        wsStopRecording();
-        clearTranscription();
-        
-        // Hide toast after 3 seconds
-        setTimeout(() => {
-          setShowToast(false);
-        }, 3000);
-      } else {
-        // Not recording, just reset counter
-        setSunsetTapCount(0);
+    // Reset tap count after 2 seconds
+    setTimeout(() => setSunsetTapCount(0), 2000);
+    
+    // Stop recording on 3 taps
+    if (sunsetTapCount === 2) {
+      if (!isRecording) {
+        showToastMessage("Not currently recording!", 'error');
+        return;
       }
+      
+      showToastMessage("Stopping recording & video stream...", 'info');
+      
+      // Stop recording
+      audioStopRecording();
+      pusherStopRecording();
+      clearTranscription();
+
+      // Stop camera and video call
+      stopVideoCall();
+      stopCameraStreaming();
+    } else {
+      showToastMessage(`Tapped sunset ${sunsetTapCount + 1}/3 times. Tap ${2 - sunsetTapCount} more to stop recording.`, 'info');
     }
-    
-    // Reset counter if too much time passes between taps
-    setTimeout(() => {
-      setSunsetTapCount(0);
-    }, 2000);
   };
 
   useEffect(() => {
@@ -318,18 +417,23 @@ export default function WeatherApp() {
     initializeWeather();
   }, []);
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-400 to-blue-600 p-4">
-      {/* Toast Notification */}
-      {showToast && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg animate-bounce">
-          <div className="flex items-center">
-            <div className="w-2 h-2 bg-white rounded-full mr-2 animate-pulse"></div>
-            Emergency service triggered
-          </div>
-        </div>
-      )}
+  // Monitor for automatic emergency calls
+  useEffect(() => {
+    if (emergencyCallResult && emergencyCallResult.success && emergencyCallResult.callSid) {
+      showToastMessage(
+        `🚨 Emergency call initiated automatically! Call ID: ${emergencyCallResult.callSid}`, 
+        'error'
+      );
+    } else if (emergencyCallResult && !emergencyCallResult.success) {
+      showToastMessage(
+        `❌ Emergency call failed: ${emergencyCallResult.error}`, 
+        'error'
+      );
+    }
+  }, [emergencyCallResult]);
 
+  return (
+    <div className={`min-h-screen transition-colors duration-500 ${getWeatherBackground(weather?.weather[0].main || 'clear')}`}>
       <div className="max-w-md mx-auto">
         {/* Search Form - Moved to top */}
         {(!showLocationPrompt || weather || locationPermission === 'denied') && (
@@ -383,10 +487,100 @@ export default function WeatherApp() {
           </div>
         )}
 
+        {/* Video Display - Only show when streaming */}
+        {(localStream || remoteStream) && (
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            {localStream && (
+              <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-3">
+                <h4 className="text-sm font-bold text-white mb-2">Local Video</h4>
+                <video ref={localVideoRef} autoPlay muted playsInline className="w-full rounded-lg"></video>
+              </div>
+            )}
+            {remoteStream && (
+              <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-3">
+                <h4 className="text-sm font-bold text-white mb-2">Remote Video</h4>
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded-lg"></video>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Transcription Display */}
+        {transcription && (
+          <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-4 mb-6 text-white">
+            <h3 className="text-lg font-bold mb-3">Live Transcription</h3>
+            <div className="bg-white/10 rounded-lg p-3">
+              <p className="text-sm">{transcription}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Analysis Display */}
+        {analysis && (
+          <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-4 mb-6 text-white">
+            <h3 className="text-lg font-bold mb-3">Audio Analysis</h3>
+            <div className="bg-white/10 rounded-lg p-3 space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span>Emergency Level:</span>
+                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                  analysis.emergencyLevel === 'critical' ? 'bg-red-500 text-white' :
+                  analysis.emergencyLevel === 'high' ? 'bg-orange-500 text-white' :
+                  analysis.emergencyLevel === 'medium' ? 'bg-yellow-500 text-black' :
+                  analysis.emergencyLevel === 'low' ? 'bg-blue-500 text-white' :
+                  'bg-green-500 text-white'
+                }`}>
+                  {analysis.emergencyLevel}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Sentiment:</span>
+                <span className="text-blue-200">{analysis.sentiment}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Confidence:</span>
+                <span className="text-blue-200">{(analysis.confidence * 100).toFixed(1)}%</span>
+              </div>
+              {analysis.actionRequired && (
+                <div className="mt-2 p-2 bg-yellow-500/20 border border-yellow-400/30 rounded-lg">
+                  <div className="flex items-center">
+                    <AlertTriangle className="h-3 w-3 text-yellow-400 mr-2" />
+                    <span className="text-yellow-200 text-xs">Action Required</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Error Message */}
         {error && (
           <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-6">
             {error}
+          </div>
+        )}
+
+        {/* System Errors Display */}
+        {(pusherError || audioError || cameraError) && (
+          <div className="bg-red-500/20 border border-red-400/30 rounded-lg p-4 mb-6">
+            <h4 className="text-red-200 font-bold mb-2 text-sm">System Errors</h4>
+            {pusherError && (
+              <div className="flex items-center mb-1">
+                <XCircle className="h-3 w-3 text-red-400 mr-2" />
+                <span className="text-red-200 text-xs">Pusher: {pusherError}</span>
+              </div>
+            )}
+            {audioError && (
+              <div className="flex items-center mb-1">
+                <XCircle className="h-3 w-3 text-red-400 mr-2" />
+                <span className="text-red-200 text-xs">Audio: {audioError}</span>
+              </div>
+            )}
+            {cameraError && (
+              <div className="flex items-center">
+                <XCircle className="h-3 w-3 text-red-400 mr-2" />
+                <span className="text-red-200 text-xs">Camera: {cameraError}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -399,9 +593,34 @@ export default function WeatherApp() {
             </div>
 
             {/* Location */}
-            <div className="flex items-center justify-center mb-4">
-              <MapPin className="w-5 h-5 mr-2" />
-              <h2 className="text-2xl font-bold">{weather.name}</h2>
+            <div className="text-center mb-4">
+              <div className="flex items-center justify-center mb-2">
+                <MapPin className="w-5 h-5 mr-2" />
+                <h2 className="text-2xl font-bold">{weather.name}</h2>
+              </div>
+              
+              {/* Street Address from Mapbox */}
+              {address && (
+                <div className="text-sm text-blue-100 max-w-xs mx-auto">
+                  <p className="truncate" title={formatAddressForDisplay(address)}>
+                    📍 {formatAddressForDisplay(address)}
+                  </p>
+                </div>
+              )}
+              
+              {/* Loading state for geocoding */}
+              {geocodeLoading && (
+                <div className="text-xs text-blue-200 mt-1">
+                  Getting street address...
+                </div>
+              )}
+              
+              {/* Geocoding error (optional - only show if wanted) */}
+              {geocodeError && !address && (
+                <div className="text-xs text-blue-200 mt-1">
+                  Street address unavailable
+                </div>
+              )}
             </div>
 
             {/* Main Weather */}
@@ -461,7 +680,7 @@ export default function WeatherApp() {
               </div>
             </div>
 
-            {/* Sunrise/Sunset with Secret Trigger */}
+            {/* Sunrise/Sunset with Recording Controls */}
             <div className="mt-6 grid grid-cols-2 gap-4">
               <div 
                 className="bg-white/20 rounded-lg p-4 backdrop-blur-sm cursor-pointer hover:bg-white/30 transition-colors"
@@ -470,8 +689,21 @@ export default function WeatherApp() {
                 <div className="flex items-center mb-2">
                   <Sunrise className="w-4 h-4 mr-2" />
                   <span className="text-sm font-medium">Sunrise</span>
+                  {sunriseTapCount > 0 && (
+                    <span className="ml-2 text-xs bg-blue-500 px-2 py-1 rounded">
+                      {sunriseTapCount}/3
+                    </span>
+                  )}
                 </div>
                 <p className="text-lg font-bold">{formatTime(weather.sys.sunrise)}</p>
+                <p className="text-xs text-blue-200 mt-1">
+                  {!hasAudioPermission 
+                    ? "Tap for audio permission" 
+                    : !localStream 
+                    ? "Tap for camera permission" 
+                    : "Tap to start recording"
+                  }
+                </p>
               </div>
 
               <div 
@@ -481,8 +713,14 @@ export default function WeatherApp() {
                 <div className="flex items-center mb-2">
                   <Sunset className="w-4 h-4 mr-2" />
                   <span className="text-sm font-medium">Sunset</span>
+                  {sunsetTapCount > 0 && (
+                    <span className="ml-2 text-xs bg-red-500 px-2 py-1 rounded">
+                      {sunsetTapCount + 1}/3
+                    </span>
+                  )}
                 </div>
                 <p className="text-lg font-bold">{formatTime(weather.sys.sunset)}</p>
+                <p className="text-xs text-blue-200 mt-1">Tap 3x to stop recording</p>
               </div>
             </div>
 
@@ -507,9 +745,43 @@ export default function WeatherApp() {
           <div className="text-center text-white/80 mt-8">
             <p className="text-lg mb-2">Enter a city name to get started</p>
             <p className="text-sm">Try: London, New York, Tokyo, Paris...</p>
+            <div className="mt-4">
+              <Link 
+                href="/test-pusher" 
+                className="inline-block bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Test Pusher Implementation
+              </Link>
+            </div>
           </div>
         )}
       </div>
+
+      {/* Live status bar */}
+      {isRecording && (
+        <div className="fixed bottom-0 left-0 right-0 bg-red-600 text-white p-2 text-center text-sm font-bold z-40 flex items-center justify-center">
+          <Mic className="h-4 w-4 mr-2 animate-pulse" />
+          <span>RECORDING AUDIO</span>
+          {isCameraStreaming && (
+            <>
+              <span className="mx-2">|</span>
+              <Video className="h-4 w-4 mr-2 animate-pulse" />
+              <span>STREAMING VIDEO</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {showToast && (
+        <div className={`fixed top-4 right-4 p-3 rounded-lg shadow-lg z-50 ${
+          toastType === 'success' ? 'bg-green-500 text-white' :
+          toastType === 'error' ? 'bg-red-500 text-white' :
+          'bg-blue-500 text-white'
+        }`}>
+          <p className="text-sm font-medium">{toastMessage}</p>
+        </div>
+      )}
     </div>
   );
 }

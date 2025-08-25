@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
+interface ReasoningAnalysis {
+  emergencyLevel: 'none' | 'low' | 'medium' | 'high' | 'critical';
+  context: string;
+  keywords: string[];
+  sentiment: 'positive' | 'neutral' | 'negative' | 'distressed';
+  actionRequired: boolean;
+  suggestedActions: string[];
+  confidence: number;
+  reasoning: string;
+}
+
 interface WebSocketState {
   isConnected: boolean;
   isRecording: boolean;
   transcription: string;
+  analysis: ReasoningAnalysis | null;
+  emergencyCall: any | null;
   error: string | null;
   isDevelopment: boolean;
 }
@@ -14,6 +27,8 @@ export const useWebSocket = () => {
     isConnected: false,
     isRecording: false,
     transcription: '',
+    analysis: null,
+    emergencyCall: null,
     error: null,
     isDevelopment: process.env.NODE_ENV === 'development',
   });
@@ -70,7 +85,27 @@ export const useWebSocket = () => {
             setState(prev => ({ 
               ...prev, 
               transcription: data.text || data.transcription || '',
+              analysis: data.analysis || null,
+              emergencyCall: data.emergencyCall || null,
             }));
+            
+            // Log analysis if present
+            if (data.analysis) {
+              console.log('🧠 REASONING ANALYSIS RECEIVED:', data.analysis);
+              console.log('🚨 Emergency Level:', data.analysis.emergencyLevel);
+              console.log('📊 Sentiment:', data.analysis.sentiment);
+              console.log('🎯 Action Required:', data.analysis.actionRequired);
+            }
+            
+            // Log emergency call if present
+            if (data.emergencyCall) {
+              console.log('📞 EMERGENCY CALL TRIGGERED:', data.emergencyCall);
+              if (data.emergencyCall.success) {
+                console.log('✅ Call initiated successfully:', data.emergencyCall.callSid);
+              } else {
+                console.log('❌ Call failed:', data.emergencyCall.error);
+              }
+            }
           } else if (data.type === 'audioReceived') {
             console.log('Audio received confirmation:', data);
           }
@@ -164,6 +199,8 @@ export const useWebSocket = () => {
             setState(prev => ({ 
               ...prev, 
               transcription: result.transcription,
+              analysis: result.analysis,
+              emergencyCall: result.emergencyCall || null,
             }));
           } else if (result.success === false && result.reason === 'Audio data too small to contain meaningful speech') {
             console.log('🔇 Audio too small, skipping transcription');
@@ -201,7 +238,7 @@ export const useWebSocket = () => {
   }, []);
 
   const startRecording = useCallback(() => {
-    setState(prev => ({ ...prev, isRecording: true, transcription: '' }));
+    setState(prev => ({ ...prev, isRecording: true, transcription: '', analysis: null, emergencyCall: null }));
   }, []);
 
   const stopRecording = useCallback(() => {
@@ -209,7 +246,7 @@ export const useWebSocket = () => {
   }, []);
 
   const clearTranscription = useCallback(() => {
-    setState(prev => ({ ...prev, transcription: '' }));
+    setState(prev => ({ ...prev, transcription: '', analysis: null, emergencyCall: null }));
   }, []);
 
   useEffect(() => {

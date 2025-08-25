@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Droplets, Thermometer, Wind, Eye, Sunrise, Sunset, MapPin, Wifi, Signal, Battery } from 'lucide-react';
+import { ArrowLeft, Droplets, Thermometer, Wind, Eye, Sunrise, Sunset, MapPin, Wifi, Signal, Battery, Phone, AlertTriangle, CheckCircle, XCircle, Mic, MicOff } from 'lucide-react';
 import Link from 'next/link';
+import { usePusher } from '../hooks/usePusher';
 
 interface WeatherData {
   name: string;
@@ -36,6 +37,20 @@ interface LocationData {
 export default function HumidityPage() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Pusher and Audio Recording hooks
+  const {
+    isConnected,
+    isRecording,
+    transcription,
+    analysis,
+    emergencyCall,
+    error: pusherError,
+    sendAudioData,
+    startRecording: pusherStartRecording,
+    stopRecording: pusherStopRecording,
+    clearTranscription,
+  } = usePusher();
 
   const getWeatherIcon = (iconCode: string) => {
     return `https://openweathermap.org/img/wn/${iconCode}@2x.png`;
@@ -263,23 +278,128 @@ export default function HumidityPage() {
             <h3 className="text-lg font-bold mb-4 text-center">Live Status</h3>
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div className="flex items-center justify-center">
-                <Wifi className="w-6 h-6 text-green-400 mr-2" />
-                <span className="text-sm font-medium">Connected</span>
+                <Wifi className={`w-6 h-6 mr-2 ${isConnected ? 'text-green-400' : 'text-red-400'}`} />
+                <span className="text-sm font-medium">{isConnected ? 'Connected' : 'Disconnected'}</span>
               </div>
               <div className="flex items-center justify-center">
-                <Signal className="w-6 h-6 text-green-400 mr-2" />
-                <span className="text-sm font-medium">Online</span>
+                <Signal className={`w-6 h-6 mr-2 ${isRecording ? 'text-green-400' : 'text-yellow-400'}`} />
+                <span className="text-sm font-medium">{isRecording ? 'Recording' : 'Standby'}</span>
               </div>
               <div className="flex items-center justify-center">
-                <Battery className="w-6 h-6 text-green-400 mr-2" />
-                <span className="text-sm font-medium">Active</span>
+                <Battery className={`w-6 h-6 mr-2 ${emergencyCall ? 'text-red-400' : 'text-green-400'}`} />
+                <span className="text-sm font-medium">{emergencyCall ? 'Emergency' : 'Normal'}</span>
               </div>
             </div>
-            <div className="bg-white/10 rounded-lg p-4 min-h-[80px] flex items-center justify-center">
-              <p className="text-blue-100 text-center">
-                Real-time humidity monitoring system is active and collecting data
-              </p>
+
+            {/* Emergency Call Status */}
+            {emergencyCall && (
+              <div className="bg-red-500/20 border border-red-400/30 rounded-lg p-4 mb-4">
+                <div className="flex items-center mb-2">
+                  <Phone className="h-5 w-5 text-red-400 mr-2" />
+                  <h4 className="text-lg font-semibold text-red-200">Emergency Call Status</h4>
+                </div>
+                {emergencyCall.success ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center">
+                      <CheckCircle className="h-4 w-4 text-green-400 mr-2" />
+                      <span className="text-green-200 text-sm">Call initiated successfully</span>
+                    </div>
+                    <div className="text-sm text-red-200">
+                      <span className="font-medium">Call ID:</span> {emergencyCall.callSid}
+                    </div>
+                    <div className="text-sm text-red-200">
+                      <span className="font-medium">Emergency Number:</span> {emergencyCall.emergencyNumber}
+                    </div>
+                    <p className="text-xs text-red-300">
+                      Emergency services have been contacted automatically based on the analysis.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center">
+                      <XCircle className="h-4 w-4 text-red-400 mr-2" />
+                      <span className="text-red-200 text-sm">Call failed</span>
+                    </div>
+                    <div className="text-sm text-red-200">
+                      <span className="font-medium">Error:</span> {emergencyCall.error}
+                    </div>
+                    <p className="text-xs text-red-300">
+                      Please contact emergency services manually if needed.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Reasoning Analysis */}
+            {analysis && (
+              <div className="bg-blue-500/20 border border-blue-400/30 rounded-lg p-4 mb-4">
+                <div className="flex items-center mb-2">
+                  <AlertTriangle className="h-5 w-5 text-blue-400 mr-2" />
+                  <h4 className="text-lg font-semibold text-blue-200">AI Analysis</h4>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-blue-200">Emergency Level:</span>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      analysis.emergencyLevel === 'critical' ? 'bg-red-500 text-white' :
+                      analysis.emergencyLevel === 'high' ? 'bg-orange-500 text-white' :
+                      analysis.emergencyLevel === 'medium' ? 'bg-yellow-500 text-black' :
+                      analysis.emergencyLevel === 'low' ? 'bg-blue-500 text-white' :
+                      'bg-green-500 text-white'
+                    }`}>
+                      {analysis.emergencyLevel.toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-blue-200">Sentiment:</span>
+                    <span className="text-sm text-blue-100">{analysis.sentiment}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-blue-200">Action Required:</span>
+                    <span className={`text-sm ${analysis.actionRequired ? 'text-red-300' : 'text-green-300'}`}>
+                      {analysis.actionRequired ? 'YES' : 'NO'}
+                    </span>
+                  </div>
+                  <div className="text-xs text-blue-300 mt-2">
+                    <span className="font-medium">Context:</span> {analysis.context}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Live Transcription */}
+            <div className="bg-white/10 rounded-lg p-4 min-h-[80px]">
+              <div className="flex items-center mb-2">
+                {isRecording ? (
+                  <Mic className="w-4 h-4 text-green-400 mr-2 animate-pulse" />
+                ) : (
+                  <MicOff className="w-4 h-4 text-gray-400 mr-2" />
+                )}
+                <span className="text-sm font-medium text-blue-200">
+                  {isRecording ? 'Live Transcription' : 'No Active Recording'}
+                </span>
+              </div>
+              {transcription ? (
+                <div className="text-blue-100 text-sm leading-relaxed max-h-32 overflow-y-auto">
+                  {transcription}
+                </div>
+              ) : (
+                <p className="text-blue-200 text-sm text-center">
+                  {isRecording ? 'Listening for audio...' : 'Real-time humidity monitoring system is active and collecting data'}
+                </p>
+              )}
             </div>
+
+            {/* Error Display */}
+            {pusherError && (
+              <div className="bg-red-500/20 border border-red-400/30 rounded-lg p-3 mt-4">
+                <div className="flex items-center">
+                  <XCircle className="h-4 w-4 text-red-400 mr-2" />
+                  <span className="text-red-200 text-sm">{pusherError}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

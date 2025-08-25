@@ -1,9 +1,6 @@
 # CONTACT
 *A Fully Covert Safety Application Disguised as a Weather App*
 
-![Weather App Interface](https://img.shields.io/badge/Cover-Weather%20App-blue?style=for-the-badge)
-![Emergency Features](https://img.shields.io/badge/Function-Emergency%20Response-red?style=for-the-badge)
-![Platform](https://img.shields.io/badge/Platform-Cross%20Platform-green?style=for-the-badge)
 
 ## 🌦️ What It Appears To Be
 
